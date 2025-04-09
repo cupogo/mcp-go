@@ -53,18 +53,20 @@ var _ ClientSession = (*sseSession)(nil)
 // SSEServer implements a Server-Sent Events (SSE) based MCP server.
 // It provides real-time communication capabilities over HTTP using the SSE protocol.
 type SSEServer struct {
-	server          *MCPServer
-	baseURL         string
-	basePath        string
-  useFullURLForMessageEndpoint bool
-	messageEndpoint string
-	sseEndpoint     string
-	sessions        sync.Map
-	srv             *http.Server
-	contextFunc     SSEContextFunc
+	server                       *MCPServer
+	baseURL                      string
+	basePath                     string
+	useFullURLForMessageEndpoint bool
+	messageEndpoint              string
+	sseEndpoint                  string
+	sessions                     sync.Map
+	srv                          *http.Server
+	contextFunc                  SSEContextFunc
 
 	keepAlive         bool
 	keepAliveInterval time.Duration
+
+	appendQueryToMessageEndpoint bool
 }
 
 // SSEOption defines a function type for configuring SSEServer
@@ -108,6 +110,17 @@ func WithBasePath(basePath string) SSEOption {
 func WithMessageEndpoint(endpoint string) SSEOption {
 	return func(s *SSEServer) {
 		s.messageEndpoint = endpoint
+	}
+}
+
+// WithAppendQueryToMessageEndpoint configures the SSE server to append the original request's
+// query parameters to the message endpoint URL that is sent to clients during the SSE connection
+// initialization. This is useful when you need to preserve query parameters from the initial
+// SSE connection request and carry them over to subsequent message requests, maintaining
+// context or authentication details across the communication channel.
+func WithAppendQueryToMessageEndpoint() SSEOption {
+	return func(s *SSEServer) {
+		s.appendQueryToMessageEndpoint = true
 	}
 }
 
@@ -158,12 +171,12 @@ func WithSSEContextFunc(fn SSEContextFunc) SSEOption {
 // NewSSEServer creates a new SSE server instance with the given MCP server and options.
 func NewSSEServer(server *MCPServer, opts ...SSEOption) *SSEServer {
 	s := &SSEServer{
-		server:            server,
-		sseEndpoint:       "/sse",
-		messageEndpoint:   "/message",
-    useFullURLForMessageEndpoint: true,
-		keepAlive:         false,
-		keepAliveInterval: 10 * time.Second,
+		server:                       server,
+		sseEndpoint:                  "/sse",
+		messageEndpoint:              "/message",
+		useFullURLForMessageEndpoint: true,
+		keepAlive:                    false,
+		keepAliveInterval:            10 * time.Second,
 	}
 
 	// Apply all options
@@ -293,9 +306,12 @@ func (s *SSEServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 
-
 	// Send the initial endpoint event
-	fmt.Fprintf(w, "event: endpoint\ndata: %s\r\n\r\n", s.GetMessageEndpointForClient(sessionID))
+	endpoint := s.GetMessageEndpointForClient(sessionID)
+	if s.appendQueryToMessageEndpoint && len(r.URL.RawQuery) > 0 {
+		endpoint += "&" + r.URL.RawQuery
+	}
+	fmt.Fprintf(w, "event: endpoint\ndata: %s\r\n\r\n", endpoint)
 	flusher.Flush()
 
 	// Main event loop - this runs in the HTTP handler goroutine
