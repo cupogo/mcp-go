@@ -457,7 +457,6 @@ package main
 
 import (
     "context"
-    "errors"
     "fmt"
 
     "github.com/mark3labs/mcp-go/mcp"
@@ -469,7 +468,7 @@ func main() {
     s := server.NewMCPServer(
         "Hello World Server",
         "1.0.0",
-        server.WithToolCapabilities(false),
+        server.WithToolCapabilities(true),
     )
 
     // Define a simple tool
@@ -491,12 +490,28 @@ func main() {
 }
 
 func helloHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-    name, err := request.RequireString("name")
-    if err != nil {
-        return mcp.NewToolResultError(err.Error()), nil
+    arguments := request.GetArguments()
+    name, ok := arguments["name"].(string)
+    if !ok {
+        return &mcp.CallToolResult{
+            Content: []mcp.Content{
+                mcp.TextContent{
+                    Type: "text",
+                    Text: "Error: name parameter is required and must be a string",
+                },
+            },
+            IsError: true,
+        }, nil
     }
 
-    return mcp.NewToolResultText(fmt.Sprintf("Hello, %s! 👋", name)), nil
+    return &mcp.CallToolResult{
+        Content: []mcp.Content{
+            mcp.TextContent{
+                Type: "text",
+                Text: fmt.Sprintf("Hello, %s! 👋", name),
+            },
+        },
+    }, nil
 }
 ```
 
@@ -560,57 +575,77 @@ import (
     "context"
     "fmt"
     "log"
+    "time"
 
     "github.com/mark3labs/mcp-go/client"
+    "github.com/mark3labs/mcp-go/client/transport"
     "github.com/mark3labs/mcp-go/mcp"
 )
 
 func main() {
-    // Create a stdio client that connects to another MCP server
-	// NTOE: NewStdioMCPClient will start the connection automatically. Don't call the Start method manually
-    c, err := client.NewStdioMCPClient(
-        "go", "run", "path/to/server/main.go",
-    )
-    if err != nil {
-        log.Fatal(err)
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    // Create stdio transport
+    stdioTransport := transport.NewStdio("go", nil, "run", "path/to/server/main.go")
+
+    // Create client with the transport
+    c := client.NewClient(stdioTransport)
+
+    // Start the client
+    if err := c.Start(ctx); err != nil {
+        log.Fatalf("Failed to start client: %v", err)
     }
     defer c.Close()
 
-    ctx := context.Background()
-
-    // Initialize the connection
-    if err := c.Initialize(ctx); err != nil {
-        log.Fatal(err)
+    // Initialize the client
+    initRequest := mcp.InitializeRequest{}
+    initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+    initRequest.Params.ClientInfo = mcp.Implementation{
+        Name:    "Hello World Client",
+        Version: "1.0.0",
     }
+    initRequest.Params.Capabilities = mcp.ClientCapabilities{}
+
+    serverInfo, err := c.Initialize(ctx, initRequest)
+    if err != nil {
+        log.Fatalf("Failed to initialize: %v", err)
+    }
+
+    fmt.Printf("Connected to server: %s (version %s)\n",
+        serverInfo.ServerInfo.Name,
+        serverInfo.ServerInfo.Version)
 
     // List available tools
-    tools, err := c.ListTools(ctx)
-    if err != nil {
-        log.Fatal(err)
-    }
+    if serverInfo.Capabilities.Tools != nil {
+        toolsRequest := mcp.ListToolsRequest{}
+        toolsResult, err := c.ListTools(ctx, toolsRequest)
+        if err != nil {
+            log.Fatalf("Failed to list tools: %v", err)
+        }
 
-    fmt.Printf("Available tools: %d\n", len(tools.Tools))
-    for _, tool := range tools.Tools {
-        fmt.Printf("- %s: %s\n", tool.Name, tool.Description)
-    }
+        fmt.Printf("Available tools: %d\n", len(toolsResult.Tools))
+        for _, tool := range toolsResult.Tools {
+            fmt.Printf("- %s: %s\n", tool.Name, tool.Description)
+        }
 
-    // Call a tool
-    result, err := c.CallTool(ctx, mcp.CallToolRequest{
-        Params: mcp.CallToolParams{
-            Name: "hello_world",
-            Arguments: map[string]interface{}{
-                "name": "World",
-            },
-        },
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
+        // Call a tool
+        callRequest := mcp.CallToolRequest{}
+        callRequest.Params.Name = "hello_world"
+        callRequest.Params.Arguments = map[string]interface{}{
+            "name": "World",
+        }
 
-    // Print the result
-    for _, content := range result.Content {
-        if content.Type == "text" {
-            fmt.Printf("Result: %s\n", content.Text)
+        result, err := c.CallTool(ctx, callRequest)
+        if err != nil {
+            log.Fatalf("Failed to call tool: %v", err)
+        }
+
+        // Print the result
+        for _, content := range result.Content {
+            if textContent, ok := content.(mcp.TextContent); ok {
+                fmt.Printf("Result: %s\n", textContent.Text)
+            }
         }
     }
 }
@@ -627,37 +662,60 @@ import (
     "context"
     "fmt"
     "log"
+    "time"
 
     "github.com/mark3labs/mcp-go/client"
+    "github.com/mark3labs/mcp-go/client/transport"
     "github.com/mark3labs/mcp-go/mcp"
 )
 
 func main() {
-    // Create a StreamableHTTP client
-    c := client.NewStreamableHttpClient("http://localhost:8080/mcp")
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    // Create HTTP transport
+    httpTransport, err := transport.NewStreamableHTTP("http://localhost:8080/mcp")
+    if err != nil {
+        log.Fatalf("Failed to create HTTP transport: %v", err)
+    }
+
+    // Create client with the transport
+    c := client.NewClient(httpTransport)
     defer c.Close()
 
-    ctx := context.Background()
-
-    // Initialize and use the client
-    if err := c.Initialize(ctx); err != nil {
-        log.Fatal(err)
+    // Initialize the client
+    initRequest := mcp.InitializeRequest{}
+    initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+    initRequest.Params.ClientInfo = mcp.Implementation{
+        Name:    "StreamableHTTP Client",
+        Version: "1.0.0",
     }
+    initRequest.Params.Capabilities = mcp.ClientCapabilities{}
+
+    serverInfo, err := c.Initialize(ctx, initRequest)
+    if err != nil {
+        log.Fatalf("Failed to initialize: %v", err)
+    }
+
+    fmt.Printf("Connected to server: %s (version %s)\n",
+        serverInfo.ServerInfo.Name,
+        serverInfo.ServerInfo.Version)
 
     // Call a tool
-    result, err := c.CallTool(ctx, mcp.CallToolRequest{
-        Params: mcp.CallToolRequestParams{
-            Name: "hello_world",
-            Arguments: map[string]interface{}{
-                "name": "StreamableHTTP World",
-            },
-        },
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
+    if serverInfo.Capabilities.Tools != nil {
+        callRequest := mcp.CallToolRequest{}
+        callRequest.Params.Name = "hello_world"
+        callRequest.Params.Arguments = map[string]interface{}{
+            "name": "StreamableHTTP World",
+        }
 
-    fmt.Printf("Tool result: %+v\n", result)
+        result, err := c.CallTool(ctx, callRequest)
+        if err != nil {
+            log.Fatalf("Failed to call tool: %v", err)
+        }
+
+        fmt.Printf("Tool result: %+v\n", result)
+    }
 }
 ```
 
@@ -689,6 +747,505 @@ Now that you have a working MCP server and client:
 * Verify tool parameter types match the schema
 * Check error handling in your tool functions
 * Use the MCP Inspector for debugging
+
+
+## Sampling
+
+Learn how to implement MCP clients that can handle sampling requests from servers, enabling bidirectional communication where clients provide LLM capabilities to servers.
+
+### Overview
+
+Sampling allows MCP clients to respond to LLM completion requests from servers. When a server needs to generate content, answer questions, or perform reasoning tasks, it can send a sampling request to the client, which then processes it using an LLM and returns the result.
+
+### Implementing a Sampling Handler
+
+Create a sampling handler by implementing the `SamplingHandler` interface:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    
+    "github.com/mark3labs/mcp-go/client"
+    "github.com/mark3labs/mcp-go/client/transport"
+    "github.com/mark3labs/mcp-go/mcp"
+)
+
+type MySamplingHandler struct {
+    // Add fields for your LLM client (OpenAI, Anthropic, etc.)
+}
+
+func (h *MySamplingHandler) CreateMessage(ctx context.Context, request mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+    // Extract request parameters
+    messages := request.Messages
+    systemPrompt := request.SystemPrompt
+    maxTokens := request.MaxTokens
+    temperature := request.Temperature
+    
+    // Process with your LLM
+    response, err := h.callLLM(ctx, messages, systemPrompt, maxTokens, temperature)
+    if err != nil {
+        return nil, fmt.Errorf("LLM call failed: %w", err)
+    }
+    
+    // Return MCP-formatted result
+    return &mcp.CreateMessageResult{
+        Model: "your-model-name",
+        Role:  mcp.RoleAssistant,
+        Content: mcp.TextContent{
+            Type: "text",
+            Text: response,
+        },
+        StopReason: "endTurn",
+    }, nil
+}
+
+func (h *MySamplingHandler) callLLM(ctx context.Context, messages []mcp.SamplingMessage, systemPrompt string, maxTokens int, temperature float64) (string, error) {
+    // Implement your LLM integration here
+    // This is where you'd call OpenAI, Anthropic, or other LLM APIs
+    return "Your LLM response here", nil
+}
+```
+
+### Configuring the Client
+
+Enable sampling by providing a handler when creating the client:
+
+```go
+func main() {
+    // Create sampling handler
+    samplingHandler := &MySamplingHandler{}
+    
+    // Create stdio transport
+    stdioTransport := transport.NewStdio("/path/to/mcp/server", nil)
+    
+    // Create client with sampling support
+    mcpClient := client.NewClient(stdioTransport, client.WithSamplingHandler(samplingHandler))
+    
+    // Start the client
+    ctx := context.Background()
+    if err := mcpClient.Start(ctx); err != nil {
+        log.Fatalf("Failed to start client: %v", err)
+    }
+    defer mcpClient.Close()
+    if err := mcpClient.Connect(ctx); err != nil {
+        log.Fatalf("Failed to connect: %v", err)
+    }
+    
+    // The client will now automatically handle sampling requests
+    // from the server using your handler
+}
+```
+
+### Mock Implementation Example
+
+Here's a complete mock implementation for testing:
+
+```go
+package main
+
+import (
+import (
+    "context"
+    "fmt"
+    "log"
+    "strings"
+    "os"
+
+    "github.com/mark3labs/mcp-go/client"
+    "github.com/mark3labs/mcp-go/mcp"
+)
+type MockSamplingHandler struct{}
+
+func (h *MockSamplingHandler) CreateMessage(ctx context.Context, request mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+    // Log the request for debugging
+    log.Printf("Mock LLM received sampling request:")
+    log.Printf("  System prompt: %s", request.SystemPrompt)
+    log.Printf("  Max tokens: %d", request.MaxTokens)
+    log.Printf("  Temperature: %f", request.Temperature)
+    
+    // Extract the user's message
+    var userMessage string
+    for _, msg := range request.Messages {
+        if msg.Role == mcp.RoleUser {
+            if textContent, ok := msg.Content.(mcp.TextContent); ok {
+                userMessage = textContent.Text
+                log.Printf("  User message: %s", userMessage)
+                break
+            }
+        }
+    }
+    
+    // Generate a mock response
+    mockResponse := fmt.Sprintf(
+        "Mock LLM response to: '%s'. This is a simulated response from a mock LLM handler.",
+        userMessage,
+    )
+    
+    return &mcp.CreateMessageResult{
+        Model: "mock-llm-v1",
+        Role:  mcp.RoleAssistant,
+        Content: mcp.TextContent{
+            Type: "text",
+            Text: mockResponse,
+        },
+        StopReason: "endTurn",
+    }, nil
+}
+
+func main() {
+    if len(os.Args) < 2 {
+        log.Fatal("Usage: sampling_client <server_path>")
+    }
+    
+    serverPath := os.Args[1]
+    
+    // Create stdio transport
+    stdioTransport := transport.NewStdio(serverPath, nil)
+    
+    // Create client with mock sampling handler
+    mcpClient := client.NewClient(stdioTransport, client.WithSamplingHandler(&MockSamplingHandler{}))
+    
+    // Start the client
+    ctx := context.Background()
+    if err := mcpClient.Start(ctx); err != nil {
+        log.Fatalf("Failed to start client: %v", err)
+    }
+    defer mcpClient.Close()
+    if err := mcpClient.Connect(ctx); err != nil {
+        log.Fatalf("Failed to connect: %v", err)
+    }
+    
+    // Test server tools that use sampling
+    result, err := mcpClient.CallTool(ctx, "ask_llm", map[string]any{
+        "question": "What is the capital of France?",
+        "system_prompt": "You are a helpful geography assistant.",
+    })
+    if err != nil {
+        log.Fatalf("Tool call failed: %v", err)
+    }
+    
+    fmt.Printf("Tool result: %+v\\n", result)
+}
+```
+
+### Real LLM Integration
+
+#### OpenAI Integration
+
+```go
+import (
+    "github.com/sashabaranov/go-openai"
+)
+
+type OpenAISamplingHandler struct {
+    client *openai.Client
+}
+
+func NewOpenAISamplingHandler(apiKey string) *OpenAISamplingHandler {
+    return &OpenAISamplingHandler{
+        client: openai.NewClient(apiKey),
+    }
+}
+
+func (h *OpenAISamplingHandler) CreateMessage(ctx context.Context, request mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+    // Convert MCP messages to OpenAI format
+    var messages []openai.ChatCompletionMessage
+    
+    // Add system message if provided
+    if request.SystemPrompt != "" {
+        messages = append(messages, openai.ChatCompletionMessage{
+            Role:    openai.ChatMessageRoleSystem,
+            Content: request.SystemPrompt,
+        })
+    }
+    
+    // Convert MCP messages
+    for _, msg := range request.Messages {
+        var role string
+        switch msg.Role {
+        case mcp.RoleUser:
+            role = openai.ChatMessageRoleUser
+        case mcp.RoleAssistant:
+            role = openai.ChatMessageRoleAssistant
+        }
+        
+        if textContent, ok := msg.Content.(mcp.TextContent); ok {
+            messages = append(messages, openai.ChatCompletionMessage{
+                Role:    role,
+                Content: textContent.Text,
+            })
+        }
+    }
+    
+    // Create OpenAI request
+    req := openai.ChatCompletionRequest{
+        Model:       openai.GPT3Dot5Turbo,
+        Messages:    messages,
+        MaxTokens:   request.MaxTokens,
+        Temperature: float32(request.Temperature),
+    }
+    
+    // Call OpenAI API
+    resp, err := h.client.CreateChatCompletion(ctx, req)
+    if err != nil {
+        return nil, fmt.Errorf("OpenAI API call failed: %w", err)
+    }
+    
+    if len(resp.Choices) == 0 {
+        return nil, fmt.Errorf("no response from OpenAI")
+    }
+    
+    choice := resp.Choices[0]
+    
+    // Convert stop reason
+    var stopReason string
+    switch choice.FinishReason {
+    case "stop":
+        stopReason = "endTurn"
+    case "length":
+        stopReason = "maxTokens"
+    default:
+        stopReason = "other"
+    }
+    
+    return &mcp.CreateMessageResult{
+        Model: resp.Model,
+        Role:  mcp.RoleAssistant,
+        Content: mcp.TextContent{
+            Type: "text",
+            Text: choice.Message.Content,
+        },
+        StopReason: stopReason,
+    }, nil
+}
+```
+
+#### Anthropic Integration
+
+```go
+import (
+    "bytes"
+    "encoding/json"
+    "net/http"
+)
+
+type AnthropicSamplingHandler struct {
+    apiKey string
+    client *http.Client
+}
+
+func NewAnthropicSamplingHandler(apiKey string) *AnthropicSamplingHandler {
+    return &AnthropicSamplingHandler{
+        apiKey: apiKey,
+        client: &http.Client{},
+    }
+}
+
+func (h *AnthropicSamplingHandler) CreateMessage(ctx context.Context, request mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+    // Convert to Anthropic format
+    anthropicReq := map[string]any{
+        "model":      "claude-3-sonnet-20240229",
+        "max_tokens": request.MaxTokens,
+        "messages":   h.convertMessages(request.Messages),
+    }
+    
+    if request.SystemPrompt != "" {
+        anthropicReq["system"] = request.SystemPrompt
+    }
+    
+    if request.Temperature > 0 {
+        anthropicReq["temperature"] = request.Temperature
+    }
+    
+    // Make API call
+    reqBody, _ := json.Marshal(anthropicReq)
+    httpReq, _ := http.NewRequestWithContext(ctx, "POST", 
+        "https://api.anthropic.com/v1/messages", bytes.NewBuffer(reqBody))
+    
+    httpReq.Header.Set("Content-Type", "application/json")
+    httpReq.Header.Set("x-api-key", h.apiKey)
+    httpReq.Header.Set("anthropic-version", "2023-06-01")
+    
+    resp, err := h.client.Do(httpReq)
+    if err != nil {
+        return nil, fmt.Errorf("Anthropic API call failed: %w", err)
+    }
+    defer resp.Body.Close()
+    
+    var anthropicResp struct {
+        Content []struct {
+            Text string `json:"text"`
+            Type string `json:"type"`
+        } `json:"content"`
+        Model      string `json:"model"`
+        StopReason string `json:"stop_reason"`
+    }
+    
+    if err := json.NewDecoder(resp.Body).Decode(&anthropicResp); err != nil {
+        return nil, fmt.Errorf("failed to decode Anthropic response: %w", err)
+    }
+    
+    // Extract text content
+    var text string
+    for _, content := range anthropicResp.Content {
+        if content.Type == "text" {
+            text += content.Text
+        }
+    }
+    
+    return &mcp.CreateMessageResult{
+        Model: anthropicResp.Model,
+        Role:  mcp.RoleAssistant,
+        Content: mcp.TextContent{
+            Type: "text",
+            Text: text,
+        },
+        StopReason: anthropicResp.StopReason,
+    }, nil
+}
+
+func (h *AnthropicSamplingHandler) convertMessages(messages []mcp.SamplingMessage) []map[string]any {
+    var result []map[string]any
+    for _, msg := range messages {
+        if textContent, ok := msg.Content.(mcp.TextContent); ok {
+            result = append(result, map[string]any{
+                "role":    string(msg.Role),
+                "content": textContent.Text,
+            })
+        }
+    }
+    return result
+}
+```
+
+### Automatic Capability Declaration
+
+When you provide a sampling handler, the client automatically declares the sampling capability during initialization:
+
+```go
+// This automatically adds sampling capability
+stdioTransport := transport.NewStdio(serverPath, nil)
+mcpClient := client.NewClient(stdioTransport, client.WithSamplingHandler(handler))
+```
+
+The client will include this in the initialization request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2024-11-05",
+    "capabilities": {
+      "sampling": {}
+    },
+    "clientInfo": {
+      "name": "your-client",
+      "version": "1.0.0"
+    }
+  }
+}
+```
+
+### Error Handling
+
+Handle errors gracefully in your sampling handler:
+
+```go
+func (h *MySamplingHandler) CreateMessage(ctx context.Context, request mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+    // Validate request
+    if len(request.Messages) == 0 {
+        return nil, fmt.Errorf("no messages provided")
+    }
+    
+    // Check for context cancellation
+    if err := ctx.Err(); err != nil {
+        return nil, fmt.Errorf("request cancelled: %w", err)
+    }
+    
+    // Call LLM with error handling
+    response, err := h.callLLM(ctx, request)
+    if err != nil {
+        // Log error for debugging
+        log.Printf("LLM call failed: %v", err)
+        
+        // Return appropriate error
+        if strings.Contains(err.Error(), "rate limit") {
+            return nil, fmt.Errorf("rate limit exceeded, please try again later")
+        }
+        return nil, fmt.Errorf("LLM service unavailable: %w", err)
+    }
+    
+    return response, nil
+}
+```
+
+### Best Practices
+
+1. **Implement Proper Error Handling**: Always handle LLM API errors gracefully
+2. **Respect Rate Limits**: Implement rate limiting and backoff strategies
+3. **Validate Inputs**: Check message content and parameters before processing
+4. **Use Context**: Respect context cancellation and timeouts
+5. **Log Appropriately**: Log requests for debugging but avoid logging sensitive data
+6. **Model Selection**: Allow configuration of which LLM model to use
+7. **Content Filtering**: Implement content filtering if required by your use case
+
+### Testing Your Implementation
+
+Test your sampling handler with the sampling server example:
+
+```bash
+# Build the sampling server
+cd examples/sampling_server
+go build -o sampling_server
+
+# Build your client
+go build -o my_client
+
+# Test the integration
+./my_client ./sampling_server
+```
+
+### Transport Support
+
+Sampling is available on the following transports:
+
+#### STDIO Transport
+
+For STDIO clients, create the transport and client separately:
+
+```go
+stdioTransport := transport.NewStdio("/path/to/server", nil)
+mcpClient := client.NewClient(stdioTransport, client.WithSamplingHandler(&MySamplingHandler{}))
+```
+
+#### In-Process Transport
+
+For in-process clients, use the dedicated constructor:
+
+```go
+mcpClient, err := client.NewInProcessClientWithSamplingHandler(
+    mcpServer, 
+    &MySamplingHandler{},
+)
+```
+
+In-process sampling uses direct method calls instead of JSON-RPC serialization.
+
+#### Unsupported Transports
+
+SSE and StreamableHTTP transports do not support sampling due to their one-way or stateless nature.
+
+### Next Steps
+
+* Learn about [server-side sampling implementation](/servers/advanced-sampling)
+* Explore [client operations](/clients/operations)
+* Check out the [sampling examples](https://github.com/mark3labs/mcp-go/tree/main/examples/sampling_client)
+* See [in-process transport documentation](/transports/inprocess) for embedded scenarios
 
 
 ## Client Basics
@@ -2807,6 +3364,53 @@ func demonstrateSubscriptionManager(c client.Client) {
 }
 ```
 
+### Advanced: Sampling Support
+
+Sampling is an advanced feature that allows clients to respond to LLM completion requests from servers. This enables servers to leverage client-side LLM capabilities for content generation and reasoning.
+
+> **Note**: Sampling is an advanced feature that most clients don't need. Only implement sampling if you're building a client that provides LLM capabilities to servers.
+
+#### When to Implement Sampling
+
+Consider implementing sampling when your client:
+
+* Has access to LLM APIs (OpenAI, Anthropic, etc.)
+* Wants to provide LLM capabilities to servers
+* Needs to support servers that generate dynamic content
+
+#### Basic Implementation
+
+```go
+import "github.com/mark3labs/mcp-go/client"
+
+// Implement the SamplingHandler interface
+type MySamplingHandler struct {
+    // Add your LLM client here
+}
+
+func (h *MySamplingHandler) CreateMessage(ctx context.Context, request mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+    // Process the request with your LLM
+    // Return the result in MCP format
+    return &mcp.CreateMessageResult{
+        Model: "your-model",
+        Role:  mcp.RoleAssistant,
+        Content: mcp.TextContent{
+            Type: "text",
+            Text: "Your LLM response here",
+        },
+        StopReason: "endTurn",
+    }, nil
+}
+
+// Create client with sampling support
+mcpClient, err := client.NewStdioClient(
+    "/path/to/server",
+    client.WithSamplingHandler(&MySamplingHandler{}),
+)
+```
+
+For complete sampling documentation, see **[Client Sampling Guide](/clients/advanced-sampling)**.
+
 ### Next Steps
 
 * **[Client Transports](/clients/transports)** - Learn transport-specific client features
@@ -2877,6 +3481,42 @@ func createStdioClient() {
     }
 
     log.Printf("Available tools: %d", len(tools.Tools))
+}
+```
+
+#### STDIO Client with Custom Configuration
+
+```go
+func createCustomStdioClient() {
+    // Create custom logger for debugging
+    logger := myCustomLogger{}
+
+    // Create STDIO client with custom options
+    c, err := client.NewStdioMCPClientWithOptions(
+        "go",
+        []string{"GOCACHE=/tmp/gocache"}, // Custom environment
+        []string{"run", "/path/to/server/main.go"},
+        transport.WithCommandLogger(logger),
+        transport.WithCommandFunc(func(ctx context.Context, command string, args []string, env []string) (*exec.Cmd, error) {
+            cmd := exec.CommandContext(ctx, command, args...)
+            cmd.Env = append(os.Environ(), env...)
+            cmd.Dir = "/path/to/working/directory"
+            return cmd, nil
+        }),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer c.Close()
+
+    ctx := context.Background()
+
+    // Initialize connection
+    if err := c.Initialize(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    // Use the client...
 }
 ```
 
@@ -2990,7 +3630,7 @@ func (msc *ManagedStdioClient) monitorProcess() {
             return
         case <-msc.restartChan:
             log.Println("Restarting STDIO client...")
-            
+
             if msc.client != nil {
                 msc.client.Close()
             }
@@ -3034,11 +3674,11 @@ func (msc *ManagedStdioClient) CallTool(ctx context.Context, req mcp.CallToolReq
 func (msc *ManagedStdioClient) Close() error {
     msc.cancel()
     msc.wg.Wait()
-    
+
     if msc.client != nil {
         return msc.client.Close()
     }
-    
+
     return nil
 }
 
@@ -3092,8 +3732,12 @@ func createStreamableHTTPClient() {
 
 ```go
 func createCustomStreamableHTTPClient() {
+    // Create custom logger for debugging
+    logger := myCustomLogger{}
+
     // Create StreamableHTTP client with options
     c := client.NewStreamableHttpClient("https://api.example.com/mcp",
+        transport.WithLogger(logger),
         transport.WithHTTPTimeout(30*time.Second),
         transport.WithHTTPHeaders(map[string]string{
             "User-Agent": "MyApp/1.0",
@@ -3204,6 +3848,31 @@ func (pool *StreamableHTTPClientPool) CallTool(ctx context.Context, req mcp.Call
 }
 ```
 
+#### StreamableHTTP With Preconfigured Session
+
+You can also create a StreamableHTTP client with a preconfigured session, which allows you to reuse the same session across multiple requests
+
+```go
+func createStreamableHTTPClientWithSession() {
+    // Create StreamableHTTP client with options
+    sessionID := // fetch existing session ID
+    c := client.NewStreamableHttpClient("https://api.example.com/mcp",
+        transport.WithSession(sessionID),
+    )
+    defer c.Close()
+
+    ctx := context.Background()
+    // Use client...
+    _, err := c.ListTools(ctx)
+    // If the session is terminated, you must reinitialize the client
+    if errors.Is(err, transport.ErrSessionTerminated) {
+        c.Initialize(ctx) // Reinitialize if session is terminated
+        // The session ID should change after reinitialization
+        sessionID = c.GetSessionId() // Update session ID
+    }
+}
+```
+
 ### SSE Client
 
 SSE (Server-Sent Events) clients provide real-time communication with servers.
@@ -3246,6 +3915,40 @@ func createSSEClient() {
     }
 
     log.Printf("Available tools: %d", len(tools.Tools))
+}
+```
+
+#### SSE Client with Custom Configuration
+
+```go
+func createCustomSSEClient() {
+    // Create custom logger for debugging
+    logger := myCustomLogger{}
+
+    // Create SSE client with custom options
+    c, err := client.NewSSEMCPClient("http://localhost:8080/mcp/sse",
+        transport.WithSSELogger(logger),
+        transport.WithHeaders(map[string]string{
+            "Authorization": "Bearer your-token",
+            "User-Agent":    "MyApp/1.0",
+        }),
+        transport.WithHTTPClient(&http.Client{
+            Timeout: 30 * time.Second,
+        }),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer c.Close()
+
+    ctx := context.Background()
+
+    // Initialize
+    if err := c.Initialize(ctx); err != nil {
+        log.Fatal(err)
+    }
+
+    // Use client...
 }
 ```
 
@@ -3292,7 +3995,7 @@ func (rsc *ResilientSSEClient) connect() error {
     }
 
     client := client.NewSSEClient(rsc.baseURL)
-    
+
     // Set headers
     for key, value := range rsc.headers {
         client.SetHeader(key, value)
@@ -3313,11 +4016,11 @@ func (rsc *ResilientSSEClient) reconnectLoop() {
             return
         case <-rsc.reconnectCh:
             log.Println("Reconnecting SSE client...")
-            
+
             for attempt := 1; attempt <= 5; attempt++ {
                 if err := rsc.connect(); err != nil {
                     log.Printf("Reconnection attempt %d failed: %v", attempt, err)
-                    
+
                     backoff := time.Duration(attempt) * time.Second
                     select {
                     case <-time.After(backoff):
@@ -3369,14 +4072,14 @@ func (rsc *ResilientSSEClient) Subscribe(ctx context.Context) (<-chan mcp.Notifi
 
 func (rsc *ResilientSSEClient) Close() error {
     rsc.cancel()
-    
+
     rsc.mutex.Lock()
     defer rsc.mutex.Unlock()
-    
+
     if rsc.client != nil {
         return rsc.client.Close()
     }
-    
+
     return nil
 }
 
@@ -3419,7 +4122,7 @@ func (seh *SSEEventHandler) Start() error {
     seh.wg.Add(1)
     go func() {
         defer seh.wg.Done()
-        
+
         for {
             select {
             case notification := <-notifications:
@@ -3457,7 +4160,7 @@ func (seh *SSEEventHandler) OnToolUpdate(handler func(mcp.Notification)) {
 func (seh *SSEEventHandler) addHandler(method string, handler func(mcp.Notification)) {
     seh.mutex.Lock()
     defer seh.mutex.Unlock()
-    
+
     seh.handlers[method] = append(seh.handlers[method], handler)
 }
 
@@ -3482,7 +4185,7 @@ In-process clients provide direct communication with servers in the same process
 func createInProcessClient() {
     // Create server
     s := server.NewMCPServer("Test Server", "1.0.0")
-    
+
     // Add tools to server
     s.AddTool(
         mcp.NewTool("test_tool",
@@ -3620,16 +4323,16 @@ func SelectTransport(req TransportRequirements) string {
     switch {
     case !req.NetworkRequired && req.Performance == "high":
         return "inprocess"
-    
+
     case !req.NetworkRequired && !req.MultiClient:
         return "stdio"
-    
+
     case req.RealTime && req.MultiClient:
         return "sse"
-    
+
     case req.NetworkRequired && req.MultiClient:
         return "streamablehttp"
-    
+
     default:
         return "stdio" // Default fallback
     }
@@ -3726,12 +4429,12 @@ func (cf *ClientFactory) CreateClient(transport string) (client.Client, error) {
         if !ok {
             return nil, fmt.Errorf("streamablehttp config not set")
         }
-        
+
         options := []transport.StreamableHTTPCOption{}
         if len(config.Headers) > 0 {
             options = append(options, transport.WithHTTPHeaders(config.Headers))
         }
-        
+
         return client.NewStreamableHttpClient(config.BaseURL, options...), nil
 
     case "sse":
@@ -3742,12 +4445,12 @@ func (cf *ClientFactory) CreateClient(transport string) (client.Client, error) {
         if !ok {
             return nil, fmt.Errorf("sse config not set")
         }
-        
+
         options := []transport.ClientOption{}
         if len(config.Headers) > 0 {
             options = append(options, transport.WithHeaders(config.Headers))
         }
-        
+
         return client.NewSSEMCPClient(config.BaseURL, options...)
 
     default:
@@ -3758,7 +4461,7 @@ func (cf *ClientFactory) CreateClient(transport string) (client.Client, error) {
 // Usage
 func demonstrateClientFactory() {
     factory := NewClientFactory()
-    
+
     // Configure transports
     factory.SetStdioConfig("go", "run", "server.go")
     factory.SetStreamableHTTPConfig("http://localhost:8080/mcp", map[string]string{
@@ -3783,6 +4486,426 @@ func demonstrateClientFactory() {
     // Use client...
 }
 ```
+
+### Logging Configuration
+
+All client transports support custom logging.
+Each transport provides a logger option that accepts any implementation of the `util.Logger` interface.
+
+```go
+type myCustomLogger struct {}
+
+func (myCustomLogger) Infof(format string, args ...any) {
+    // TODO
+}
+
+func (myCustomLogger) Errorf(format string, args ...any) {
+    // TODO
+}
+```
+
+
+## Sampling
+
+Learn how to implement MCP servers that can request LLM completions from clients using the sampling capability.
+
+### Overview
+
+Sampling allows MCP servers to request LLM completions from clients, enabling bidirectional communication where servers can leverage client-side LLM capabilities. This is particularly useful for tools that need to generate content, answer questions, or perform reasoning tasks.
+
+### Enabling Sampling
+
+To enable sampling in your server, call `EnableSampling()` during server setup:
+
+```go
+package main
+
+import (
+    "context"
+    "github.com/mark3labs/mcp-go/mcp"
+    "github.com/mark3labs/mcp-go/server"
+)
+
+func main() {
+    // Create server
+    mcpServer := server.NewMCPServer("my-server", "1.0.0")
+    
+    // Enable sampling capability
+    mcpServer.EnableSampling()
+    
+    // Add tools that use sampling...
+    
+    // Start server
+    server.ServeStdio(mcpServer)
+}
+```
+
+### Requesting Sampling
+
+Use `RequestSampling()` within tool handlers to request LLM completions:
+
+```go
+mcpServer.AddTool(mcp.Tool{
+    Name:        "ask_llm",
+    Description: "Ask the LLM a question using sampling",
+    InputSchema: mcp.ToolInputSchema{
+        Type: "object",
+        Properties: map[string]any{
+            "question": map[string]any{
+                "type":        "string",
+                "description": "The question to ask the LLM",
+            },
+            "system_prompt": map[string]any{
+                "type":        "string", 
+                "description": "Optional system prompt",
+            },
+        },
+        Required: []string{"question"},
+    },
+}, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    // Extract parameters
+    question, err := request.RequireString("question")
+    if err != nil {
+        return nil, err
+    }
+    
+    systemPrompt := request.GetString("system_prompt", "You are a helpful assistant.")
+    
+    // Create sampling request
+    samplingRequest := mcp.CreateMessageRequest{
+        CreateMessageParams: mcp.CreateMessageParams{
+            Messages: []mcp.SamplingMessage{
+                {
+                    Role: mcp.RoleUser,
+                    Content: mcp.TextContent{
+                        Type: "text",
+                        Text: question,
+                    },
+                },
+            },
+            SystemPrompt: systemPrompt,
+            MaxTokens:    1000,
+            Temperature:  0.7,
+        },
+    }
+    
+    // Request sampling from client
+    result, err := mcpServer.RequestSampling(ctx, samplingRequest)
+    if err != nil {
+        return &mcp.CallToolResult{
+            Content: []mcp.Content{
+                mcp.TextContent{
+                    Type: "text",
+                    Text: fmt.Sprintf("Error requesting sampling: %v", err),
+                },
+            },
+            IsError: true,
+        }, nil
+    }
+    
+    // Return the LLM response
+    return &mcp.CallToolResult{
+        Content: []mcp.Content{
+            mcp.TextContent{
+                Type: "text",
+                Text: fmt.Sprintf("LLM Response: %s", getTextFromContent(result.Content)),
+            },
+        },
+    }, nil
+})
+```
+
+### Sampling Request Parameters
+
+The `CreateMessageRequest` supports various parameters to control LLM behavior:
+
+```go
+samplingRequest := mcp.CreateMessageRequest{
+    CreateMessageParams: mcp.CreateMessageParams{
+        // Required: Messages to send to the LLM
+        Messages: []mcp.SamplingMessage{
+            {
+                Role: mcp.RoleUser,        // or mcp.RoleAssistant
+                Content: mcp.TextContent{   // or mcp.ImageContent
+                    Type: "text",
+                    Text: "Your message here",
+                },
+            },
+        },
+        
+        // Optional: System prompt for context
+        SystemPrompt: "You are a helpful assistant.",
+        
+        // Optional: Maximum tokens to generate
+        MaxTokens: 1000,
+        
+        // Optional: Temperature for randomness (0.0 to 1.0)
+        Temperature: 0.7,
+        
+        // Optional: Top-p sampling parameter
+        TopP: 0.9,
+        
+        // Optional: Stop sequences
+        StopSequences: []string{"\\n\\n"},
+    },
+}
+```
+
+### Message Types
+
+Sampling supports different message roles and content types:
+
+#### Message Roles
+
+```go
+// User message
+{
+    Role: mcp.RoleUser,
+    Content: mcp.TextContent{
+        Type: "text",
+        Text: "What is the capital of France?",
+    },
+}
+
+// Assistant message (for conversation context)
+{
+    Role: mcp.RoleAssistant,
+    Content: mcp.TextContent{
+        Type: "text", 
+        Text: "The capital of France is Paris.",
+    },
+}
+```
+
+#### Content Types
+
+##### Text Content
+
+```go
+mcp.TextContent{
+    Type: "text",
+    Text: "Your text content here",
+}
+```
+
+##### Image Content
+
+```go
+mcp.ImageContent{
+    Type: "image",
+    Data: "base64-encoded-image-data",
+    MimeType: "image/jpeg",
+}
+```
+
+### Error Handling
+
+Always handle sampling errors gracefully:
+
+```go
+result, err := mcpServer.RequestSampling(ctx, samplingRequest)
+if err != nil {
+    // Log the error
+    log.Printf("Sampling request failed: %v", err)
+    
+    // Return appropriate error response
+    return &mcp.CallToolResult{
+        Content: []mcp.Content{
+            mcp.TextContent{
+                Type: "text",
+                Text: "Sorry, I couldn't process your request at this time.",
+            },
+        },
+        IsError: true,
+    }, nil
+}
+```
+
+### Context and Timeouts
+
+Use context for timeout control:
+
+```go
+// Set a timeout for the sampling request
+ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+defer cancel()
+
+result, err := mcpServer.RequestSampling(ctx, samplingRequest)
+```
+
+### Best Practices
+
+1. **Enable Sampling Early**: Call `EnableSampling()` during server initialization
+2. **Handle Timeouts**: Set appropriate timeouts for sampling requests
+3. **Graceful Errors**: Always provide meaningful error messages to users
+4. **Content Extraction**: Use helper functions to extract text from responses
+5. **System Prompts**: Use clear system prompts to guide LLM behavior
+6. **Parameter Validation**: Validate tool parameters before making sampling requests
+
+### Complete Example
+
+Here's a complete example server with sampling:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+    
+    "github.com/mark3labs/mcp-go/mcp"
+    "github.com/mark3labs/mcp-go/server"
+)
+
+func main() {
+    // Create server
+    mcpServer := server.NewMCPServer("sampling-example-server", "1.0.0")
+    
+    // Enable sampling capability
+    mcpServer.EnableSampling()
+    
+    // Add sampling tool
+    mcpServer.AddTool(mcp.Tool{
+        Name:        "ask_llm",
+        Description: "Ask the LLM a question using sampling",
+        InputSchema: mcp.ToolInputSchema{
+            Type: "object",
+            Properties: map[string]any{
+                "question": map[string]any{
+                    "type":        "string",
+                    "description": "The question to ask the LLM",
+                },
+                "system_prompt": map[string]any{
+                    "type":        "string",
+                    "description": "Optional system prompt",
+                },
+            },
+            Required: []string{"question"},
+        },
+    }, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+        question, err := request.RequireString("question")
+        if err != nil {
+            return nil, err
+        }
+        
+        systemPrompt := request.GetString("system_prompt", "You are a helpful assistant.")
+        
+        // Create sampling request
+        samplingRequest := mcp.CreateMessageRequest{
+            CreateMessageParams: mcp.CreateMessageParams{
+                Messages: []mcp.SamplingMessage{
+                    {
+                        Role: mcp.RoleUser,
+                        Content: mcp.TextContent{
+                            Type: "text",
+                            Text: question,
+                        },
+                    },
+                },
+                SystemPrompt: systemPrompt,
+                MaxTokens:    1000,
+                Temperature:  0.7,
+            },
+        }
+        
+        // Request sampling with timeout
+        samplingCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+        defer cancel()
+        
+        result, err := mcpServer.RequestSampling(samplingCtx, samplingRequest)
+        if err != nil {
+            return &mcp.CallToolResult{
+                Content: []mcp.Content{
+                    mcp.TextContent{
+                        Type: "text",
+                        Text: fmt.Sprintf("Error requesting sampling: %v", err),
+                    },
+                },
+                IsError: true,
+            }, nil
+        }
+        
+        // Return the LLM response
+        return &mcp.CallToolResult{
+            Content: []mcp.Content{
+                mcp.TextContent{
+                    Type: "text",
+                    Text: fmt.Sprintf("LLM Response (model: %s): %s", 
+                        result.Model, getTextFromContent(result.Content)),
+                },
+            },
+        }, nil
+    })
+    
+    // Start server
+    log.Println("Starting sampling example server...")
+    if err := server.ServeStdio(mcpServer); err != nil {
+        log.Fatalf("Server error: %v", err)
+    }
+}
+
+// Helper function to extract text from content
+func getTextFromContent(content interface{}) string {
+    switch c := content.(type) {
+    case mcp.TextContent:
+        return c.Text
+    case string:
+        return c
+    default:
+        return fmt.Sprintf("%v", content)
+    }
+}
+```
+
+### Transport Support
+
+Sampling is supported on the following transports:
+
+#### STDIO Transport
+
+STDIO transport provides full sampling support with JSON-RPC message passing:
+
+```go
+// Start STDIO server with sampling
+server.ServeStdio(mcpServer)
+```
+
+The client must implement a `SamplingHandler` and declare sampling capability during initialization.
+
+#### In-Process Transport
+
+In-process transport offers the most efficient sampling implementation with direct method calls:
+
+```go
+// Create in-process client with sampling handler
+mcpClient, err := client.NewInProcessClientWithSamplingHandler(mcpServer, samplingHandler)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+**Benefits of in-process sampling:**
+
+* **Direct Method Calls**: No JSON-RPC serialization overhead
+* **Type Safety**: Compile-time type checking
+
+#### Unsupported Transports
+
+The following transports do not currently support sampling:
+
+* **SSE Transport**: One-way streaming nature prevents bidirectional sampling
+* **StreamableHTTP Transport**: Stateless HTTP requests don't support sampling callbacks
+
+For these transports, consider implementing LLM integration directly in your tool handlers rather than using sampling.
+
+### Next Steps
+
+* Learn about [client-side sampling implementation](/clients/advanced-sampling)
+* Explore [advanced server features](/servers/advanced)
+* Check out the [sampling examples](https://github.com/mark3labs/mcp-go/tree/main/examples/sampling_server)
+* See [in-process sampling documentation](/transports/inprocess#sampling-support) for embedded scenarios
 
 
 ## Advanced Server Features
@@ -3917,7 +5040,7 @@ func handleCreateUser(ctx context.Context, req mcp.CallToolRequest, input UserCr
         Status:    "created",
     }
 
-    return mcp.NewToolResultJSON(output), nil
+    return mcp.NewToolResultJSON(output)
 }
 ```
 
@@ -4608,6 +5731,145 @@ func startWithGracefulShutdown(s *server.MCPServer) {
 }
 ```
 
+### Client Capability Based Filtering
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+
+    "github.com/mark3labs/mcp-go/mcp"
+    "github.com/mark3labs/mcp-go/server"
+)
+
+func main() {
+    s := server.NewMCPServer("Typed Server", "1.0.0",
+        server.WithToolCapabilities(true),
+    )
+
+     s.AddTool(
+        mcp.NewTool("calculate",
+            mcp.WithDescription("Perform basic mathematical calculations"),
+            mcp.WithString("operation",
+                mcp.Required(),
+                mcp.Enum("add", "subtract", "multiply", "divide"),
+                mcp.Description("The operation to perform"),
+            ),
+            mcp.WithNumber("x", mcp.Required(), mcp.Description("First number")),
+            mcp.WithNumber("y", mcp.Required(), mcp.Description("Second number")),
+        ),
+        handleCalculate,
+    )
+
+    server.ServeStdio(s)
+}
+
+func handleCalculate(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    session := server.ClientSessionFromContext(ctx)
+	if session == nil {
+		return nil, fmt.Errorf("no active session")
+	}
+
+	if clientSession, ok := session.(server.SessionWithClientInfo); ok {
+             clientCapabilities := clientSession.GetClientCapabilities()
+			 if clientCapabilities.Sampling == nil {
+				 fmt.Println("sampling is not enabled in client")
+			 }
+	}
+
+    // TODO: implement calculation logic
+    return mcp.NewToolResultError("not implemented"), nil
+}
+```
+
+### Sampling (Advanced)
+
+Sampling is an advanced feature that allows servers to request LLM completions from clients. This enables bidirectional communication where servers can leverage client-side LLM capabilities for content generation, reasoning, and question answering.
+
+> **Note**: Sampling is an advanced feature that most servers don't need. Only implement sampling if your server specifically needs to generate content using the client's LLM.
+
+#### When to Use Sampling
+
+Consider sampling when your server needs to:
+
+* Generate content based on user input
+* Answer questions using LLM reasoning
+* Perform text analysis or summarization
+* Create dynamic responses that require LLM capabilities
+
+#### Basic Implementation
+
+```go
+// Enable sampling capability
+mcpServer.EnableSampling()
+
+// Add a tool that uses sampling
+mcpServer.AddTool(mcp.Tool{
+    Name:        "ask_llm",
+    Description: "Ask the LLM a question using sampling",
+    InputSchema: mcp.ToolInputSchema{
+        Type: "object",
+        Properties: map[string]any{
+            "question": map[string]any{
+                "type":        "string",
+                "description": "The question to ask the LLM",
+            },
+        },
+        Required: []string{"question"},
+    },
+}, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    question, err := request.RequireString("question")
+    if err != nil {
+        return nil, err
+    }
+    
+    // Create sampling request
+    samplingRequest := mcp.CreateMessageRequest{
+        CreateMessageParams: mcp.CreateMessageParams{
+            Messages: []mcp.SamplingMessage{
+                {
+                    Role: mcp.RoleUser,
+                    Content: mcp.TextContent{
+                        Type: "text",
+                        Text: question,
+                    },
+                },
+            },
+            SystemPrompt: "You are a helpful assistant.",
+            MaxTokens:    1000,
+            Temperature:  0.7,
+        },
+    }
+    
+    // Request sampling from client
+    result, err := mcpServer.RequestSampling(ctx, samplingRequest)
+    if err != nil {
+        return &mcp.CallToolResult{
+            Content: []mcp.Content{
+                mcp.TextContent{
+                    Type: "text",
+                    Text: fmt.Sprintf("Error: %v", err),
+                },
+            },
+            IsError: true,
+        }, nil
+    }
+    
+    return &mcp.CallToolResult{
+        Content: []mcp.Content{
+            mcp.TextContent{
+                Type: "text",
+                Text: fmt.Sprintf("LLM Response: %s", result.Content),
+            },
+        },
+    }, nil
+})
+```
+
+For complete sampling documentation, see **[Server Sampling Guide](/servers/advanced-sampling)**.
+
 ### Next Steps
 
 * **[Client Development](/clients)** - Learn to build MCP clients
@@ -4802,6 +6064,7 @@ Configure transport-specific options:
 httpServer := server.NewStreamableHTTPServer(s,
     server.WithEndpointPath("/mcp"),
     server.WithStateless(true),
+    server.WithTLSCert("/path/to/cert.pem", "/path/to/key.pem"),
 )
 
 if err := httpServer.Start(":8080"); err != nil {
@@ -4938,7 +6201,7 @@ MCP servers expose tools, resources, and prompts to LLM clients. MCP-Go makes it
 * **[Resources](/servers/resources)** - Exposing data to LLMs
 * **[Tools](/servers/tools)** - Providing functionality to LLMs
 * **[Prompts](/servers/prompts)** - Creating reusable interaction templates
-* **[Advanced Features](/servers/advanced)** - Typed tools, middleware, hooks, and more
+* **[Advanced Features](/servers/advanced)** - Typed tools, middleware, hooks, sampling, and more
 
 ### Quick Example
 
@@ -6295,6 +7558,310 @@ mcp.WithNumber("price",
 )
 ```
 
+### Struct-Based Schema Definition
+
+MCP-Go supports defining input and output schemas using Go structs with automatic JSON schema generation. This provides a type-safe alternative to manual parameter definition, especially useful for complex tools with structured inputs and outputs.
+
+#### Input Schema with Go Structs
+
+Define your input parameters as a Go struct and use `WithInputSchema`:
+
+```go
+// Define input struct with JSON schema tags
+type SearchRequest struct {
+    Query      string   `json:"query" jsonschema_description:"Search query" jsonschema:"required"`
+    Limit      int      `json:"limit,omitempty" jsonschema_description:"Maximum results" jsonschema:"minimum=1,maximum=100,default=10"`
+    Categories []string `json:"categories,omitempty" jsonschema_description:"Filter by categories"`
+    SortBy     string   `json:"sortBy,omitempty" jsonschema_description:"Sort field" jsonschema:"enum=relevance,enum=date,enum=popularity"`
+}
+
+// Create tool with struct-based input schema
+searchTool := mcp.NewTool("search_products",
+    mcp.WithDescription("Search product catalog"),
+    mcp.WithInputSchema[SearchRequest](),
+)
+```
+
+#### Output Schema with Go Structs
+
+Define structured output for predictable tool responses:
+
+```go
+// Define output struct
+type SearchResponse struct {
+    Query       string    `json:"query" jsonschema_description:"Original search query"`
+    TotalCount  int       `json:"totalCount" jsonschema_description:"Total matching products"`
+    Products    []Product `json:"products" jsonschema_description:"Search results"`
+    ProcessedAt time.Time `json:"processedAt" jsonschema_description:"When search was performed"`
+}
+
+type Product struct {
+    ID          string  `json:"id" jsonschema_description:"Product ID"`
+    Name        string  `json:"name" jsonschema_description:"Product name"`
+    Price       float64 `json:"price" jsonschema_description:"Price in USD"`
+    InStock     bool    `json:"inStock" jsonschema_description:"Availability"`
+}
+
+// Create tool with both input and output schemas
+searchTool := mcp.NewTool("search_products",
+    mcp.WithDescription("Search product catalog with structured output"),
+    mcp.WithInputSchema[SearchRequest](),
+    mcp.WithOutputSchema[SearchResponse](),
+)
+```
+
+#### Structured Tool Handlers
+
+Use `NewStructuredToolHandler` for type-safe handler implementation:
+
+```go
+func main() {
+    s := server.NewMCPServer("Product Search", "1.0.0",
+        server.WithToolCapabilities(false),
+    )
+
+    // Define tool with input and output schemas
+    searchTool := mcp.NewTool("search_products",
+        mcp.WithDescription("Search product catalog"),
+        mcp.WithInputSchema[SearchRequest](),
+        mcp.WithOutputSchema[SearchResponse](),
+    )
+
+    // Add tool with structured handler
+    s.AddTool(searchTool, mcp.NewStructuredToolHandler(searchProductsHandler))
+    
+    server.ServeStdio(s)
+}
+
+// Handler receives typed input and returns typed output
+func searchProductsHandler(ctx context.Context, req mcp.CallToolRequest, args SearchRequest) (SearchResponse, error) {
+    // Input is already validated and bound to SearchRequest struct
+    limit := args.Limit
+    if limit <= 0 {
+        limit = 10
+    }
+
+    // Perform search logic
+    products := searchDatabase(args.Query, args.Categories, limit)
+
+    // Return structured response
+    return SearchResponse{
+        Query:       args.Query,
+        TotalCount:  len(products),
+        Products:    products,
+        ProcessedAt: time.Now(),
+    }, nil
+}
+```
+
+#### Array Output Schema
+
+Tools can return arrays of structured data:
+
+```go
+// Define asset struct
+type Asset struct {
+    ID       string  `json:"id" jsonschema_description:"Asset identifier"`
+    Name     string  `json:"name" jsonschema_description:"Asset name"`
+    Value    float64 `json:"value" jsonschema_description:"Current value"`
+    Currency string  `json:"currency" jsonschema_description:"Currency code"`
+}
+
+// Tool that returns array of assets
+assetsTool := mcp.NewTool("list_assets",
+    mcp.WithDescription("List portfolio assets"),
+    mcp.WithInputSchema[struct {
+        Portfolio string `json:"portfolio" jsonschema_description:"Portfolio ID" jsonschema:"required"`
+    }](),
+    mcp.WithOutputSchema[[]Asset](), // Array output schema
+)
+
+func listAssetsHandler(ctx context.Context, req mcp.CallToolRequest, args struct{ Portfolio string }) ([]Asset, error) {
+    // Return array of assets
+    return []Asset{
+        {ID: "btc", Name: "Bitcoin", Value: 45000.50, Currency: "USD"},
+        {ID: "eth", Name: "Ethereum", Value: 3200.75, Currency: "USD"},
+    }, nil
+}
+```
+
+#### Schema Tags Reference
+
+MCP-Go uses the `jsonschema` struct tags for schema generation:
+
+```go
+type ExampleStruct struct {
+    // Required field
+    Name string `json:"name" jsonschema:"required"`
+    
+    // Field with description
+    Age int `json:"age" jsonschema_description:"User age in years"`
+    
+    // Field with constraints
+    Score float64 `json:"score" jsonschema:"minimum=0,maximum=100"`
+    
+    // Enum field
+    Status string `json:"status" jsonschema:"enum=active,enum=inactive,enum=pending"`
+    
+    // Optional field with default
+    PageSize int `json:"pageSize,omitempty" jsonschema:"default=20"`
+    
+    // Array with constraints
+    Tags []string `json:"tags" jsonschema:"minItems=1,maxItems=10"`
+}
+```
+
+#### Manual Structured Results
+
+For more control over the response, use `NewTypedToolHandler` with manual result creation:
+
+```go
+manualTool := mcp.NewTool("process_data",
+    mcp.WithDescription("Process data with custom result"),
+    mcp.WithInputSchema[ProcessRequest](),
+    mcp.WithOutputSchema[ProcessResponse](),
+)
+
+s.AddTool(manualTool, mcp.NewTypedToolHandler(manualProcessHandler))
+
+func manualProcessHandler(ctx context.Context, req mcp.CallToolRequest, args ProcessRequest) (*mcp.CallToolResult, error) {
+    // Process the data
+    response := ProcessResponse{
+        Status:      "completed",
+        ProcessedAt: time.Now(),
+        ItemCount:   42,
+    }
+    
+    // Create custom fallback text for backward compatibility
+    fallbackText := fmt.Sprintf("Processed %d items successfully", response.ItemCount)
+    
+    // Return structured result with custom text
+    return mcp.NewToolResultStructured(response, fallbackText), nil
+}
+```
+
+#### Complete Example: File Operations with Structured I/O
+
+Here's a complete example using the file operations pattern from earlier, enhanced with structured schemas:
+
+```go
+// Define structured input for file operations
+type FileOperationRequest struct {
+    Path     string `json:"path" jsonschema_description:"File path" jsonschema:"required"`
+    Content  string `json:"content,omitempty" jsonschema_description:"File content (for write operations)"`
+    Encoding string `json:"encoding,omitempty" jsonschema_description:"File encoding" jsonschema:"enum=utf-8,enum=ascii,enum=base64,default=utf-8"`
+}
+
+// Define structured output
+type FileOperationResponse struct {
+    Success   bool      `json:"success" jsonschema_description:"Operation success status"`
+    Path      string    `json:"path" jsonschema_description:"File path"`
+    Message   string    `json:"message" jsonschema_description:"Result message"`
+    Content   string    `json:"content,omitempty" jsonschema_description:"File content (for read operations)"`
+    Size      int64     `json:"size,omitempty" jsonschema_description:"File size in bytes"`
+    Modified  time.Time `json:"modified,omitempty" jsonschema_description:"Last modified time"`
+}
+
+func main() {
+    s := server.NewMCPServer("File Manager", "1.0.0",
+        server.WithToolCapabilities(true),
+    )
+
+    // Create file tool with structured I/O
+    createFileTool := mcp.NewTool("create_file",
+        mcp.WithDescription("Create a new file with content"),
+        mcp.WithInputSchema[FileOperationRequest](),
+        mcp.WithOutputSchema[FileOperationResponse](),
+    )
+
+    // Read file tool
+    readFileTool := mcp.NewTool("read_file",
+        mcp.WithDescription("Read file contents"),
+        mcp.WithInputSchema[struct {
+            Path string `json:"path" jsonschema_description:"File path to read" jsonschema:"required"`
+        }](),
+        mcp.WithOutputSchema[FileOperationResponse](),
+    )
+
+    s.AddTool(createFileTool, mcp.NewStructuredToolHandler(handleCreateFile))
+    s.AddTool(readFileTool, mcp.NewStructuredToolHandler(handleReadFile))
+    
+    server.ServeStdio(s)
+}
+
+func handleCreateFile(ctx context.Context, req mcp.CallToolRequest, args FileOperationRequest) (FileOperationResponse, error) {
+    // Validate path for security
+    if strings.Contains(args.Path, "..") {
+        return FileOperationResponse{
+            Success: false,
+            Path:    args.Path,
+            Message: "Invalid path: directory traversal not allowed",
+        }, nil
+    }
+
+    // Handle different encodings
+    var data []byte
+    switch args.Encoding {
+    case "base64":
+        var err error
+        data, err = base64.StdEncoding.DecodeString(args.Content)
+        if err != nil {
+            return FileOperationResponse{
+                Success: false,
+                Path:    args.Path,
+                Message: fmt.Sprintf("Invalid base64 content: %v", err),
+            }, nil
+        }
+    default:
+        data = []byte(args.Content)
+    }
+
+    // Create file
+    if err := os.WriteFile(args.Path, data, 0644); err != nil {
+        return FileOperationResponse{
+            Success: false,
+            Path:    args.Path,
+            Message: fmt.Sprintf("Failed to create file: %v", err),
+        }, nil
+    }
+
+    // Get file info
+    info, _ := os.Stat(args.Path)
+
+    return FileOperationResponse{
+        Success:  true,
+        Path:     args.Path,
+        Message:  "File created successfully",
+        Size:     info.Size(),
+        Modified: info.ModTime(),
+    }, nil
+}
+
+func handleReadFile(ctx context.Context, req mcp.CallToolRequest, args struct{ Path string }) (FileOperationResponse, error) {
+    // Read file
+    data, err := os.ReadFile(args.Path)
+    if err != nil {
+        return FileOperationResponse{
+            Success: false,
+            Path:    args.Path,
+            Message: fmt.Sprintf("Failed to read file: %v", err),
+        }, nil
+    }
+
+    // Get file info
+    info, _ := os.Stat(args.Path)
+
+    return FileOperationResponse{
+        Success:  true,
+        Path:     args.Path,
+        Message:  "File read successfully",
+        Content:  string(data),
+        Size:     info.Size(),
+        Modified: info.ModTime(),
+    }, nil
+}
+```
+
 ### Tool Handlers
 
 Tool handlers process the actual function calls from LLMs. MCP-Go provides convenient helper methods for safe parameter extraction.
@@ -6721,6 +8288,99 @@ func handleMultiContentTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.
             },
         },
     }, nil
+}
+```
+
+#### Resource Links
+
+Tools can return resource links that reference other resources in your MCP server. This is useful when you want to point to existing data without duplicating content:
+
+```go
+func handleGetResourceLinkTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	resourceID, err := req.RequireString("resource_id")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Create a resource link pointing to an existing resource
+	uri := fmt.Sprintf("file://documents/%s", resourceID)
+	resourceLink := mcp.NewResourceLink(uri, "Document", "The requested document", "application/pdf")
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			mcp.NewTextContent("Found the requested document:"),
+			resourceLink,
+		},
+	}, nil
+}
+```
+
+#### Mixed Content with Resource Links
+
+You can combine different content types including resource links in a single tool result:
+
+```go
+func handleSearchDocumentsTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	query, err := req.RequireString("query")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	// Simulate document search
+	foundDocs := []string{"doc1.pdf", "doc2.txt", "doc3.md"}
+
+	content := []mcp.Content{
+		mcp.NewTextContent(fmt.Sprintf("Found %d documents matching '%s':", len(foundDocs), query)),
+	}
+
+	// Add resource links for each found document
+	for _, doc := range foundDocs {
+		uri := fmt.Sprintf("file://documents/%s", doc)
+		parts := strings.SplitN(doc, ".", 2)
+		name := parts[0]
+		mimeType := "application/octet-stream" // default
+		if len(parts) > 1 {
+			// Map extension to MIME type (simplified)
+			switch parts[1] {
+			case "pdf":
+				mimeType = "application/pdf"
+			case "txt":
+				mimeType = "text/plain"
+			case "md":
+				mimeType = "text/markdown"
+			}
+		}
+		resourceLink := mcp.NewResourceLink(uri, name, fmt.Sprintf("Document: %s", doc), mimeType)
+		content = append(content, resourceLink)
+	}
+
+	return &mcp.CallToolResult{
+		Content: content,
+	}, nil
+}
+```
+
+#### Resource Link with Annotations
+
+Resource links can include additional metadata through annotations:
+
+```go
+func handleGetAnnotatedResourceTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	docType := req.GetString("type", "general")
+	// Create resource link with annotations
+	annotated := mcp.Annotated{
+		Annotations: &mcp.Annotations{
+			Audience: []mcp.Role{mcp.RoleUser},
+		},
+	}
+	url := "file://documents/test.pdf"
+	resourceLink := mcp.NewResourceLink(url, "Test Document", fmt.Sprintf("A %s document", docType), "application/pdf")
+	resourceLink.Annotated = annotated
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			mcp.NewTextContent("Here's the important document you requested:"),
+			resourceLink,
+		},
+	}, nil
 }
 ```
 
@@ -7222,7 +8882,7 @@ func main() {
     mux := http.NewServeMux()
     
     // Add MCP endpoints
-    server.AddMCPRoutes(mux, s, "/mcp")
+    mux.Handle("/mcp", server.NewStreamableHTTPServer(s))
     
     // Add custom endpoints
     mux.HandleFunc("/api/status", handleStatus)
@@ -7349,7 +9009,7 @@ func handleStatelessTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
         return nil, err
     }
     
-    return mcp.NewToolResultJSON(result), nil
+    return mcp.NewToolResultJSON(result)
 }
 
 // Use external storage for persistence
@@ -7507,6 +9167,44 @@ type Claims struct {
 }
 ```
 
+#### Request Headers
+
+The StreamableHTTP transport now passes HTTP request headers to MCP handlers. This allows you to access the original HTTP headers that were sent with the request in your tool and resource handlers.
+
+##### Accessing Headers in Handlers
+
+Headers are available in all MCP request objects:
+
+```go
+func handleGetUser(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    // Access request headers
+    headers := req.Header
+
+    // Use headers for authentication, tracing, etc.
+    authToken := headers.Get("Authorization")
+    if authToken == "" {
+        return nil, fmt.Errorf("authentication required")
+    }
+    
+    // Access other headers
+    requestID := headers.Get("X-Request-ID")
+    userAgent := headers.Get("User-Agent")
+    
+    // Rest of your handler code...
+}
+```
+
+This works for all MCP request types including:
+
+* `CallToolRequest`
+* `ReadResourceRequest`
+* `ListToolsRequest`
+* `ListResourcesRequest`
+* `InitializeRequest`
+* And other MCP request types
+
+The headers are automatically populated by the transport layer and are available in your handlers without any additional configuration.
+
 ### Next Steps
 
 * **[In-Process Transport](/transports/inprocess)** - Learn about embedded scenarios
@@ -7529,12 +9227,12 @@ Transport layers handle the communication between MCP clients and servers. Each 
 
 ### Transport Comparison
 
-| Transport          | Use Case                | Pros                                       | Cons                             |
-| ------------------ | ----------------------- | ------------------------------------------ | -------------------------------- |
-| **STDIO**          | CLI tools, desktop apps | Simple, secure, no network                 | Single client, local only        |
-| **SSE**            | Web apps, real-time     | Multi-client, real-time, web-friendly      | HTTP overhead, one-way streaming |
-| **StreamableHTTP** | Web services, APIs      | Standard protocol, caching, load balancing | No real-time, more complex       |
-| **In-Process**     | Embedded, testing       | No serialization, fastest                  | Same process only                |
+| Transport          | Use Case                | Pros                                       | Cons                             | Sampling Support |
+| ------------------ | ----------------------- | ------------------------------------------ | -------------------------------- | ---------------- |
+| **STDIO**          | CLI tools, desktop apps | Simple, secure, no network                 | Single client, local only        | ✅ Full support   |
+| **SSE**            | Web apps, real-time     | Multi-client, real-time, web-friendly      | HTTP overhead, one-way streaming | ❌ Not supported  |
+| **StreamableHTTP** | Web services, APIs      | Standard protocol, caching, load balancing | No real-time, more complex       | ❌ Not supported  |
+| **In-Process**     | Embedded, testing       | No serialization, fastest                  | Same process only                | ✅ Full support   |
 
 ### Quick Example
 
@@ -7658,6 +9356,7 @@ func handleEcho(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 * Testing and development
 * High-performance scenarios
 * Library integrations
+* Sampling-enabled applications
 
 **Example use cases:**
 
@@ -7665,6 +9364,7 @@ func handleEcho(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 * Embedded analytics engines
 * High-frequency trading systems
 * Real-time game servers
+* LLM-powered applications with bidirectional communication
 
 ### Transport Configuration
 
@@ -8075,11 +9775,357 @@ func main() {
 }
 ```
 
+### Sampling Support
+
+In-process transport supports sampling, allowing servers to request LLM completions from clients. This enables bidirectional communication where servers can leverage client-side LLM capabilities.
+
+#### Enabling Sampling
+
+To enable sampling in your in-process server, call `EnableSampling()` during server setup:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/mark3labs/mcp-go/client"
+    "github.com/mark3labs/mcp-go/mcp"
+    "github.com/mark3labs/mcp-go/server"
+)
+
+// MockSamplingHandler implements client.SamplingHandler for demonstration
+type MockSamplingHandler struct{}
+
+func (h *MockSamplingHandler) CreateMessage(ctx context.Context, request mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+    // Extract the user's message
+    var userMessage string
+    for _, msg := range request.Messages {
+        if msg.Role == mcp.RoleUser {
+            if textContent, ok := msg.Content.(mcp.TextContent); ok {
+                userMessage = textContent.Text
+                break
+            }
+        }
+    }
+
+    // Generate a mock response
+    mockResponse := fmt.Sprintf("Mock LLM response to: '%s'", userMessage)
+
+    return &mcp.CreateMessageResult{
+        SamplingMessage: mcp.SamplingMessage{
+            Role: mcp.RoleAssistant,
+            Content: mcp.TextContent{
+                Type: "text",
+                Text: mockResponse,
+            },
+        },
+        Model:      "mock-llm-v1",
+        StopReason: "endTurn",
+    }, nil
+}
+
+func main() {
+    // Create server with sampling enabled
+    mcpServer := server.NewMCPServer("sampling-server", "1.0.0")
+    mcpServer.EnableSampling()
+
+    // Add a tool that uses sampling
+    mcpServer.AddTool(mcp.Tool{
+        Name:        "ask_llm",
+        Description: "Ask the LLM a question using sampling",
+        InputSchema: mcp.ToolInputSchema{
+            Type: "object",
+            Properties: map[string]any{
+                "question": map[string]any{
+                    "type":        "string",
+                    "description": "The question to ask the LLM",
+                },
+                "system_prompt": map[string]any{
+                    "type":        "string",
+                    "description": "Optional system prompt",
+                },
+            },
+            Required: []string{"question"},
+        },
+    }, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+        question, err := request.RequireString("question")
+        if err != nil {
+            return nil, err
+        }
+
+        systemPrompt := request.GetString("system_prompt", "You are a helpful assistant.")
+
+        // Create sampling request
+        samplingRequest := mcp.CreateMessageRequest{
+            CreateMessageParams: mcp.CreateMessageParams{
+                Messages: []mcp.SamplingMessage{
+                    {
+                        Role: mcp.RoleUser,
+                        Content: mcp.TextContent{
+                            Type: "text",
+                            Text: question,
+                        },
+                    },
+                },
+                SystemPrompt: systemPrompt,
+                MaxTokens:    1000,
+                Temperature:  0.7,
+            },
+        }
+
+        // Request sampling from client
+        result, err := mcpServer.RequestSampling(ctx, samplingRequest)
+        if err != nil {
+            return &mcp.CallToolResult{
+                Content: []mcp.Content{
+                    mcp.TextContent{
+                        Type: "text",
+                        Text: fmt.Sprintf("Error requesting sampling: %v", err),
+                    },
+                },
+                IsError: true,
+            }, nil
+        }
+
+        // Return the LLM response
+        return &mcp.CallToolResult{
+            Content: []mcp.Content{
+                mcp.TextContent{
+                    Type: "text",
+                    Text: fmt.Sprintf("LLM Response (model: %s): %s",
+                        result.Model, result.Content.(mcp.TextContent).Text),
+                },
+            },
+        }, nil
+    })
+
+    // Create client with sampling handler
+    mockHandler := &MockSamplingHandler{}
+    mcpClient, err := client.NewInProcessClientWithSamplingHandler(mcpServer, mockHandler)
+    if err != nil {
+        log.Fatalf("Failed to create client: %v", err)
+    }
+    defer mcpClient.Close()
+
+    // Start and initialize the client
+    ctx := context.Background()
+    if err := mcpClient.Start(ctx); err != nil {
+        log.Fatalf("Failed to start client: %v", err)
+    }
+
+    initRequest := mcp.InitializeRequest{}
+    initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+    initRequest.Params.ClientInfo = mcp.Implementation{
+        Name:    "sampling-client",
+        Version: "1.0.0",
+    }
+
+    _, err = mcpClient.Initialize(ctx, initRequest)
+    if err != nil {
+        log.Fatalf("Failed to initialize: %v", err)
+    }
+
+    // Call the tool that uses sampling
+    result, err := mcpClient.CallTool(ctx, mcp.CallToolRequest{
+        Params: mcp.CallToolParams{
+            Name: "ask_llm",
+            Arguments: map[string]any{
+                "question":      "What is the capital of France?",
+                "system_prompt": "You are a helpful geography assistant.",
+            },
+        },
+    })
+    if err != nil {
+        log.Fatalf("Tool call failed: %v", err)
+    }
+
+    // Print the result
+    if len(result.Content) > 0 {
+        if textContent, ok := result.Content[0].(mcp.TextContent); ok {
+            fmt.Printf("Tool result: %s\n", textContent.Text)
+        }
+    }
+}
+```
+
+#### Real LLM Integration
+
+For production use, replace the mock handler with a real LLM integration:
+
+##### OpenAI Integration
+
+```go
+import (
+    "github.com/sashabaranov/go-openai"
+)
+
+type OpenAISamplingHandler struct {
+    client *openai.Client
+}
+
+func NewOpenAISamplingHandler(apiKey string) *OpenAISamplingHandler {
+    return &OpenAISamplingHandler{
+        client: openai.NewClient(apiKey),
+    }
+}
+
+func (h *OpenAISamplingHandler) CreateMessage(ctx context.Context, request mcp.CreateMessageRequest) (*mcp.CreateMessageResult, error) {
+    // Convert MCP messages to OpenAI format
+    var messages []openai.ChatCompletionMessage
+
+    // Add system message if provided
+    if request.SystemPrompt != "" {
+        messages = append(messages, openai.ChatCompletionMessage{
+            Role:    openai.ChatMessageRoleSystem,
+            Content: request.SystemPrompt,
+        })
+    }
+
+    // Convert MCP messages
+    for _, msg := range request.Messages {
+        var role string
+        switch msg.Role {
+        case mcp.RoleUser:
+            role = openai.ChatMessageRoleUser
+        case mcp.RoleAssistant:
+            role = openai.ChatMessageRoleAssistant
+        }
+
+        if textContent, ok := msg.Content.(mcp.TextContent); ok {
+            messages = append(messages, openai.ChatCompletionMessage{
+                Role:    role,
+                Content: textContent.Text,
+            })
+        }
+    }
+
+    // Create OpenAI request
+    req := openai.ChatCompletionRequest{
+        Model:       openai.GPT3Dot5Turbo,
+        Messages:    messages,
+        MaxTokens:   request.MaxTokens,
+        Temperature: float32(request.Temperature),
+    }
+
+    // Call OpenAI API
+    resp, err := h.client.CreateChatCompletion(ctx, req)
+    if err != nil {
+        return nil, fmt.Errorf("OpenAI API call failed: %w", err)
+    }
+
+    if len(resp.Choices) == 0 {
+        return nil, fmt.Errorf("no response from OpenAI")
+    }
+
+    choice := resp.Choices[0]
+
+    // Convert stop reason
+    var stopReason string
+    switch choice.FinishReason {
+    case "stop":
+        stopReason = "endTurn"
+    case "length":
+        stopReason = "maxTokens"
+    default:
+        stopReason = "other"
+    }
+
+    return &mcp.CreateMessageResult{
+        SamplingMessage: mcp.SamplingMessage{
+            Role: mcp.RoleAssistant,
+            Content: mcp.TextContent{
+                Type: "text",
+                Text: choice.Message.Content,
+            },
+        },
+        Model:      resp.Model,
+        StopReason: stopReason,
+    }, nil
+}
+
+// Usage
+func main() {
+    // Create OpenAI handler
+    openaiHandler := NewOpenAISamplingHandler("your-api-key")
+    
+    // Create client with OpenAI sampling
+    mcpClient, err := client.NewInProcessClientWithSamplingHandler(mcpServer, openaiHandler)
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    // ... rest of the setup
+}
+```
+
+#### Sampling Request Parameters
+
+The `CreateMessageRequest` supports various parameters to control LLM behavior:
+
+```go
+samplingRequest := mcp.CreateMessageRequest{
+    CreateMessageParams: mcp.CreateMessageParams{
+        // Required: Messages to send to the LLM
+        Messages: []mcp.SamplingMessage{
+            {
+                Role: mcp.RoleUser,        // or mcp.RoleAssistant
+                Content: mcp.TextContent{   // or mcp.ImageContent
+                    Type: "text",
+                    Text: "Your message here",
+                },
+            },
+        },
+        
+        // Optional: System prompt for context
+        SystemPrompt: "You are a helpful assistant.",
+        
+        // Optional: Maximum tokens to generate
+        MaxTokens: 1000,
+        
+        // Optional: Temperature for randomness (0.0 to 1.0)
+        Temperature: 0.7,
+        
+        // Optional: Top-p sampling parameter
+        TopP: 0.9,
+        
+        // Optional: Stop sequences
+        StopSequences: []string{"\\n\\n"},
+    },
+}
+```
+
+#### Error Handling
+
+Always handle sampling errors gracefully:
+
+```go
+result, err := mcpServer.RequestSampling(ctx, samplingRequest)
+if err != nil {
+    // Log the error
+    log.Printf("Sampling request failed: %v", err)
+    
+    // Return appropriate error response
+    return &mcp.CallToolResult{
+        Content: []mcp.Content{
+            mcp.TextContent{
+                Type: "text",
+                Text: "Sorry, I couldn't process your request at this time.",
+            },
+        },
+        IsError: true,
+    }, nil
+}
+```
+
 ### Next Steps
 
 * **[Client Development](/clients)** - Build MCP clients for all transports
 * **[HTTP Transport](/transports/http)** - Learn about web-based scenarios
 * **[Server Advanced Features](/servers/advanced)** - Explore production-ready features
+* **[Client Sampling](/clients/advanced-sampling)** - Learn more about client-side sampling implementation
 
 
 ## SSE Transport
@@ -8165,6 +10211,19 @@ func main() {
 }
 
 func handleStreamData(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    // Access request headers
+    headers := req.Header
+
+    // Use headers for authentication, tracing, etc.
+    authToken := headers.Get("Authorization")
+    if authToken == "" {
+        return nil, fmt.Errorf("authentication required")
+    }
+    
+    // Access other headers
+    requestID := headers.Get("X-Request-ID")
+    userAgent := headers.Get("User-Agent")
+    
     source := req.GetString("source", "")
     count := req.GetInt("count", 10)
 
@@ -8404,6 +10463,48 @@ mcpServer.SendNotificationToClient(ctx, "progress_update", progressData)
 // Send notification to all connected clients (if supported)
 // Note: Check the server implementation for broadcast capabilities
 ```
+
+#### Request Headers
+
+Like the StreamableHTTP transport, the SSE transport passes HTTP request headers to MCP handlers. This allows you to access the original HTTP headers that were sent with the SSE connection in your tool and resource handlers.
+
+##### Accessing Headers in Handlers
+
+Headers from the SSE connection are available in all MCP request objects:
+
+```go
+func handleStreamData(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    // Access request headers
+    headers := req.Header
+
+    // Use headers for authentication, tracing, etc.
+    authToken := headers.Get("Authorization")
+    if authToken == "" {
+        return nil, fmt.Errorf("authentication required")
+    }
+    
+    // Access other headers
+    requestID := headers.Get("X-Request-ID")
+    userAgent := headers.Get("User-Agent")
+    
+    // Rest of your handler code...
+    mcpServer := server.ServerFromContext(ctx)
+    // ...
+}
+```
+
+This works for all MCP request types including:
+
+* `CallToolRequest`
+* `ReadResourceRequest`
+* `ListToolsRequest`
+* `ListResourcesRequest`
+* `InitializeRequest`
+* And other MCP request types
+
+The headers are automatically populated by the SSE transport layer from the initial SSE connection and are available in your handlers without any additional configuration.
+
+Note: Since SSE maintains a persistent connection, the headers are captured when the connection is established and remain the same for all requests during that connection's lifetime.
 
 ### Next Steps
 
@@ -8728,29 +10829,30 @@ package main
 import (
     "context"
     "log"
+    "time"
+
 
     "github.com/mark3labs/mcp-go/client"
+    "github.com/mark3labs/mcp-go/mcp"
 )
 
 func main() {
     // Create STDIO client
     c, err := client.NewStdioClient(
-        "go", "run", "/path/to/server/main.go",
+        "go", nil /* inherit env */, "run", "/path/to/server/main.go",
     )
     if err != nil {
         log.Fatal(err)
     }
     defer c.Close()
 
-    ctx := context.Background()
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
 
     // Initialize connection
     _, err = c.Initialize(ctx, mcp.InitializeRequest{
         Params: mcp.InitializeRequestParams{
-            ProtocolVersion: "2024-11-05",
-            Capabilities: mcp.ClientCapabilities{
-                Tools: &mcp.ToolsCapability{},
-            },
+            ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
             ClientInfo: mcp.Implementation{
                 Name:    "test-client",
                 Version: "1.0.0",
@@ -8788,6 +10890,58 @@ func main() {
 
     log.Printf("Tool result: %+v", result)
 }
+```
+
+##### Customizing Subprocess Execution
+
+If you need more control over how a sub-process is spawned when creating a new STDIO client, you can use
+`NewStdioMCPClientWithOptions` instead of `NewStdioMCPClient`.
+
+By passing the `WithCommandFunc` option, you can supply a custom factory function to create the `exec.Cmd` that launches
+the server. This allows configuration of environment variables, working directories, and system-level process attributes.
+
+Referring to the previous example, we can replace the line that creates the client:
+
+```go
+c, err := client.NewStdioClient(
+    "go", nil, "run", "/path/to/server/main.go",
+)
+```
+
+With the options-aware version:
+
+```go
+c, err := client.NewStdioMCPClientWithOptions(
+	"go",
+	nil,
+	[]string {"run", "/path/to/server/main.go"},
+	transport.WithCommandFunc(func(ctx context.Context, command string, args []string, env []string) (*exec.Cmd, error) {
+        cmd := exec.CommandContext(ctx, command, args...)
+        cmd.Env = env // Explicit environment for the subprocess.
+        cmd.Dir = "/var/sandbox/mcp-server" // Working directory (not isolated unless paired with chroot or namespace).
+
+        // Apply low-level process isolation and privilege dropping.
+        cmd.SysProcAttr = &syscall.SysProcAttr{
+            // Drop to non-root user (e.g., user/group ID 1001)
+            Credential: &syscall.Credential{
+                Uid: 1001,
+                Gid: 1001,
+            },
+            // File system isolation: only works if running as root.
+            Chroot: "/var/sandbox/mcp-server",
+
+            // Linux namespace isolation (Linux only):
+            // Prevents access to other processes, mounts, IPC, networks, etc.
+            Cloneflags: syscall.CLONE_NEWIPC | // Isolate inter-process comms
+                syscall.CLONE_NEWNS  | // Isolate filesystem mounts
+                syscall.CLONE_NEWPID | // Isolate PID namespace (child sees itself as PID 1)
+                syscall.CLONE_NEWUTS | // Isolate hostname
+                syscall.CLONE_NEWNET,  // Isolate networking (optional)
+        }
+
+		return cmd, nil
+	}),
+)
 ```
 
 ### Debugging
