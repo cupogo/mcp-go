@@ -1,4 +1,4 @@
-import{u as r,j as s}from"./index-CcvbjsIN.js";const a={title:"SSE Transport",description:"undefined"};function e(l){const i={a:"a",code:"code",div:"div",h1:"h1",h2:"h2",h3:"h3",h4:"h4",header:"header",li:"li",p:"p",pre:"pre",span:"span",strong:"strong",ul:"ul",...r(),...l.components};return s.jsxs(s.Fragment,{children:[s.jsx(i.header,{children:s.jsxs(i.h1,{id:"sse-transport",children:["SSE Transport",s.jsx(i.a,{"aria-hidden":"true",tabIndex:"-1",href:"#sse-transport",children:s.jsx(i.div,{"data-autolink-icon":!0})})]})}),`
+import{u as r,j as s}from"./index-DSJ2jMwQ.js";const a={title:"SSE Transport",description:"undefined"};function e(l){const i={a:"a",code:"code",div:"div",h1:"h1",h2:"h2",h3:"h3",h4:"h4",header:"header",li:"li",p:"p",pre:"pre",span:"span",strong:"strong",ul:"ul",...r(),...l.components};return s.jsxs(s.Fragment,{children:[s.jsx(i.header,{children:s.jsxs(i.h1,{id:"sse-transport",children:["SSE Transport",s.jsx(i.a,{"aria-hidden":"true",tabIndex:"-1",href:"#sse-transport",children:s.jsx(i.div,{"data-autolink-icon":!0})})]})}),`
 `,s.jsx(i.p,{children:"Server-Sent Events (SSE) transport enables real-time, web-friendly communication between MCP clients and servers. Perfect for web applications that need live updates and multi-client support."}),`
 `,s.jsxs(i.h2,{id:"use-cases",children:["Use Cases",s.jsx(i.a,{"aria-hidden":"true",tabIndex:"-1",href:"#use-cases",children:s.jsx(i.div,{"data-autolink-icon":!0})})]}),`
 `,s.jsx(i.p,{children:"SSE transport is ideal for:"}),`
@@ -274,7 +274,28 @@ import{u as r,j as s}from"./index-CcvbjsIN.js";const a={title:"SSE Transport",de
 `,s.jsx(i.span,{className:"line",children:s.jsx(i.span,{style:{color:"#6A737D","--shiki-dark":"#768390"},children:"        // Add custom context values from headers"})}),`
 `,s.jsxs(i.span,{className:"line",children:[s.jsx(i.span,{style:{color:"#D73A49","--shiki-dark":"#F47067"},children:"        return"}),s.jsx(i.span,{style:{color:"#24292E","--shiki-dark":"#ADBAC7"},children:" ctx"})]}),`
 `,s.jsx(i.span,{className:"line",children:s.jsx(i.span,{style:{color:"#24292E","--shiki-dark":"#ADBAC7"},children:"    }),"})}),`
+`,s.jsx(i.span,{className:"line","data-empty-line":!0,children:" "}),`
+`,s.jsx(i.span,{className:"line",children:s.jsx(i.span,{style:{color:"#6A737D","--shiki-dark":"#768390"},children:"    // Enable Cross-Origin Resource Sharing for browser-based clients"})}),`
+`,s.jsxs(i.span,{className:"line",children:[s.jsx(i.span,{style:{color:"#24292E","--shiki-dark":"#ADBAC7"},children:"    server."}),s.jsx(i.span,{style:{color:"#6F42C1","--shiki-dark":"#DCBDFB"},children:"WithSSECORS"}),s.jsx(i.span,{style:{color:"#24292E","--shiki-dark":"#ADBAC7"},children:"("})]}),`
+`,s.jsxs(i.span,{className:"line",children:[s.jsx(i.span,{style:{color:"#24292E","--shiki-dark":"#ADBAC7"},children:"        server."}),s.jsx(i.span,{style:{color:"#6F42C1","--shiki-dark":"#DCBDFB"},children:"WithCORSAllowedOrigins"}),s.jsx(i.span,{style:{color:"#24292E","--shiki-dark":"#ADBAC7"},children:"("}),s.jsx(i.span,{style:{color:"#032F62","--shiki-dark":"#96D0FF"},children:'"https://my-ai-app.com"'}),s.jsx(i.span,{style:{color:"#24292E","--shiki-dark":"#ADBAC7"},children:"),"})]}),`
+`,s.jsxs(i.span,{className:"line",children:[s.jsx(i.span,{style:{color:"#24292E","--shiki-dark":"#ADBAC7"},children:"        server."}),s.jsx(i.span,{style:{color:"#6F42C1","--shiki-dark":"#DCBDFB"},children:"WithCORSAllowCredentials"}),s.jsx(i.span,{style:{color:"#24292E","--shiki-dark":"#ADBAC7"},children:"(),"})]}),`
+`,s.jsx(i.span,{className:"line",children:s.jsx(i.span,{style:{color:"#24292E","--shiki-dark":"#ADBAC7"},children:"    ),"})}),`
 `,s.jsx(i.span,{className:"line",children:s.jsx(i.span,{style:{color:"#24292E","--shiki-dark":"#ADBAC7"},children:")"})})]})})}),`
+`,s.jsxs(i.p,{children:["CORS handling is opt-in. Without ",s.jsx(i.code,{children:"WithSSECORS"}),`, the SSE stream falls back to
+the historical default of `,s.jsx(i.code,{children:"Access-Control-Allow-Origin: *"}),` for backwards
+compatibility, while the message endpoint emits no CORS headers.
+See the `,s.jsx(i.a,{href:"/transports/http#cross-origin-resource-sharing-cors",children:"Streamable HTTP CORS docs"}),`
+for the full list of `,s.jsx(i.code,{children:"CORSOption"})," helpers shared between both transports."]}),`
+`,s.jsxs(i.p,{children:[`The SSE server also ships with automatic
+`,s.jsx(i.a,{href:"/transports/http#dns-rebinding-protection",children:"DNS rebinding protection"}),`:
+requests arriving over a loopback connection (`,s.jsx(i.code,{children:"127.0.0.1"}),", ",s.jsx(i.code,{children:"[::1]"}),`) whose
+`,s.jsx(i.code,{children:"Host"})," header is not a localhost value are rejected with ",s.jsx(i.code,{children:"403 Forbidden"}),`.
+This is enabled by default and covers `,s.jsx(i.code,{children:"ServeHTTP"}),` as well as the
+`,s.jsx(i.code,{children:"SSEHandler()"}),"/",s.jsx(i.code,{children:"MessageHandler()"}),` sub-handlers. Use
+`,s.jsx(i.code,{children:"server.WithSSEDisableLocalhostProtection(true)"}),` to opt out, for example
+behind a same-host reverse proxy that preserves the original `,s.jsx(i.code,{children:"Host"}),` header
+(prefer configuring the proxy to rewrite the `,s.jsx(i.code,{children:"Host"}),` header to localhost
+instead).`]}),`
 `,s.jsx(i.strong,{children:"Resulting endpoints:"}),`
 `,s.jsxs(i.ul,{children:[`
 `,s.jsxs(i.li,{children:["SSE stream: ",s.jsx(i.code,{children:"http://localhost:8080/api/mcp/sse"})]}),`
